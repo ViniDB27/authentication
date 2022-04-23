@@ -1,7 +1,7 @@
-import { useRouter } from "next/router";
+import Router from "next/router";
 import { createContext, ReactNode, useEffect, useState } from "react";
-import { api } from "../services/api";
-import { setCookie, parseCookies } from "nookies";
+import { setCookie, parseCookies, destroyCookie } from "nookies";
+import { api } from "../services/apiClient";
 
 type User = {
   email: string;
@@ -16,6 +16,7 @@ type SignInCredentials = {
 
 type AuthContextData = {
   signIn: (credentials: SignInCredentials) => Promise<void>;
+  signOut: () => void;
   isAuthenticate: boolean;
   user: User;
 };
@@ -28,27 +29,50 @@ export const AuthContext = createContext<AuthContextData>(
   {} as AuthContextData
 );
 
+let authChannel: BroadcastChannel;
+
+export function signOut() {
+  destroyCookie(undefined, "nextauth.token");
+  destroyCookie(undefined, "nextauth.refreshToken");
+  authChannel.postMessage("signOut");
+  Router.push("/");
+}
+
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User>();
   const isAuthenticate = !!user;
 
   useEffect(() => {
+    authChannel = new BroadcastChannel("auth");
+    authChannel.onmessage = (message) => {
+      switch (message.data) {
+        case "signOut":
+          signOut();
+          break;
+        default:
+          break;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const { "nextauth.token": token } = parseCookies();
 
     if (token) {
-      api.get("/me").then((response) => {
-        const { email, roles, permissions } = response.data;
+      api
+        .get("/me")
+        .then((response) => {
+          const { email, roles, permissions } = response.data;
 
-        setUser({
-          email,
-          roles,
-          permissions,
-        });
-      });
+          setUser({
+            email,
+            roles,
+            permissions,
+          });
+        })
+        .catch(() => signOut());
     }
   }, []);
-
-  const router = useRouter();
 
   async function signIn({ email, password }: SignInCredentials) {
     try {
@@ -77,7 +101,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       api.defaults.headers["Authorization"] = `Bearer ${token}`;
 
-      router.push("/dashboard");
+      authChannel.postMessage("signIn");
     } catch (error) {
       console.log(error);
     }
@@ -87,6 +111,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     <AuthContext.Provider
       value={{
         signIn,
+        signOut,
         isAuthenticate,
         user,
       }}
